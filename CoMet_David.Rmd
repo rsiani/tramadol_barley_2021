@@ -1,0 +1,810 @@
+---
+title: "Exploratory analysis for Comparative Metataxonomy"
+author: "Roberto Siani"
+date: "24.06.21"
+
+---
+
+# SETUP
+
+Set up working environment: packages and default graphic themes.
+
+```{r, cache = TRUE, echo = FALSE, include = FALSE}
+
+# pacman to install and load libraries
+
+if (!require("pacman")) install.packages(
+  "pacman",
+  verbose = F)
+
+# BiocManager for Bioconductor libraries
+
+if (!require("BiocManager")) install.packages(
+  "BiocManager",
+  verbose = F)
+
+# GitHub libraries
+
+pacman::p_load_gh(
+  "benjjneb/decontam",
+  "adw96/breakaway",
+  "adw96/DivNet")
+
+# install/load the remainder of libraries
+
+pacman::p_load(
+  phyloseq,
+  microbiome)
+
+# load sensible themes and palettes
+
+source("~/00_lib/scripts/helpeR.R")
+
+select = dplyr::select
+transform = microbiome::transform
+
+```
+
+# PRE-PROCESS
+
+```{r}
+
+# import metadata
+
+metaTab = 
+  read_tsv("01_inData/mapping.tsv") %>% 
+  mutate_if(is_character, as.factor) %>% 
+  select(-read_file)
+
+print(metaTab)
+
+# import and clean taxonomy
+
+raw_taxTab =  
+  read_tsv("01_inData/taxonomy.tsv") %>% 
+  map_df(~gsub(
+    pattern = "metagenome|uncultured|unidentified|Unknown",
+    replacement = NA,
+    .x)) %>%
+  mutate_if(is_character, str_trim) %>% 
+  mutate(Kingdom = ifelse(is.na(Kingdom),
+                          "U. Kingdom",
+                          Kingdom),
+         Phylum = coalesce(Phylum,
+                           ifelse(grepl("^U.", Kingdom),
+                                  Kingdom,
+                                  paste("U.", Kingdom))),
+         Class = coalesce(Class,
+                          ifelse(grepl("^U.", Phylum),
+                                 Phylum,
+                                 paste("U.", Phylum))),
+         Order = coalesce(Order,
+                          ifelse(grepl("^U.", Class),
+                                 Class,
+                                 paste("U.", Class))),
+         Family = coalesce(Family,
+                           ifelse(grepl("^U.", Order),
+                                  Order,
+                                  paste("U.", Order))),
+         Genus = coalesce(Genus,
+                          ifelse(grepl("^U.", Family),
+                                 Family,
+                                 paste("U.", Family))),
+         Species = coalesce(Species,
+                            ifelse(grepl("^U.", Genus),
+                                   Genus,
+                                   paste("U.", Genus)))) %>% 
+  column_to_rownames("ASV") %>% 
+  filter(Kingdom %in% "Bacteria" &
+           !grepl("Chloroplast", Genus) &
+           !grepl("Mitochondria", Genus) &
+           !Order %in% "Chloroplast")
+
+print(head(raw_taxTab %>% 
+             as_tibble()))
+
+# import ASVs counts
+
+raw_abuTab = 
+  read_tsv("01_inData/abundances.tsv") %>% 
+  column_to_rownames("Sample")
+
+sum(raw_abuTab)
+rowSums(raw_abuTab) %>% mean()
+
+abuTab = 
+  raw_abuTab %>%
+  select_if(colSums(.) > 0 &
+              colnames(.) %in% rownames(raw_taxTab))
+
+sum(abuTab)
+rowSums(raw_abuTab) %>% median()
+
+# final filtering of taxa table
+
+taxTab = 
+  raw_taxTab %>%
+  filter(rownames(.) %in%
+           colnames(abuTab)) %>% 
+  as.matrix()
+
+rowSums(abuTab) %>% hist()
+colSums(abuTab) %>% median()
+
+# import into phyloseq-object
+
+mCom =  
+  phyloseq(
+    otu_table(abuTab,
+              taxa_are_rows = F),
+    tax_table(taxTab),
+    sample_data(metaTab %>% 
+                  column_to_rownames("sample-id")))
+
+# save phyloseq-class object
+
+save(mCom,
+     file = paste("03_outData/mCom",
+                  format(Sys.time(), "_%d%m%y"),
+                  ".RData",
+                  sep = ""))
+
+```
+
+# INPUT
+
+Congratulations, now that you have your phyloseq object prepared, you can finally start to explore the microbial wonderland in your samples
+
+```{r, echo = FALSE, include = FALSE}
+
+# load your mCom dataset
+
+load("03_outData/mCom_141222.RData")
+
+## set up palette
+
+pal_description = c("#38626F", "#EE715E")
+
+swatches::show_palette(pal_description)
+
+# again, take a good look at your results. Look at the sparsity and the percentage of singletons, select your variables of interest
+
+summarize_phyloseq(mCom)
+
+sample_data(mCom)$group = paste(meta(mCom)$Description, meta(mCom)$Timepoint)
+
+plot_0 = MicrobiotaProcess::ggrarecurve(mCom, factorNames = "group", shadow = F) +
+  scale_color_manual(values = c(
+    monochromeR::generate_palette("#38626F", "go_both_ways", 3),
+  monochromeR::generate_palette("#EE715E", "go_lighter", 2)))
+
+cairo_pdf("04_figures/rarefaction.pdf",
+          width = 20,
+          height = 12,
+          onefile = T)
+plot_0
+dev.off()
+
+tiff("04_figures/rarefaction.tiff", width = 2000, height = 1200)
+plot_0
+dev.off()
+
+
+
+mCom = 
+  mCom %>% 
+  prune_taxa(taxa_sums(.) > 0, .)
+
+
+summarize_phyloseq(mCom)
+
+## subset for comparisons
+
+mCom_nto = 
+  mCom %>%  
+  subset_samples(Timepoint != "T0") %>%
+  prune_taxa(taxa_sums(.) > 0, .)
+
+summarize_phyloseq(mCom_nto)
+
+
+# palette cheat
+pal_fam = 
+  c("#7a3e66",
+    "#4ee168",
+    "#8161eb",
+    "#afd125",
+    "#93118d",
+    "#01b441",
+    "#f92280",
+    "#87db5d",
+    "#c40073",
+    "#65dba7",
+    "#fa4543",
+    "#018eea",
+    "#b1b200",
+    "#ff98f5",
+    "#265f00",
+    "#ff9d9f",
+    "#019876",
+    "#992b11",
+    "#005d8c",
+    "#ecc14d",
+    "#788f5c",
+    "#b98d00",
+    "#cdc989",
+    "#7e6000",
+    "#fcb786",
+    "#5c7400") %>% 
+  set_names(c("Azospirillaceae", "Beijerinckiaceae", "below q0.95", "Caulobacteraceae", 
+              "Chitinophagaceae", "Comamonadaceae", "Enterobacteriaceae", "Flavobacteriaceae", 
+              "Methylophilaceae", "Oxalobacteraceae", "Pseudomonadaceae", "Rhizobiaceae", 
+              "Rhodanobacteraceae", "Rhodocyclaceae", "U. Alphaproteobacteria", 
+              "Weeksellaceae", "Xanthomonadaceae", "Paenibacillaceae", "Sphingomonadaceae", 
+              "Brevibacillaceae", "Spirosomaceae", "Erwiniaceae", "Xanthobacteraceae", 
+              "Hyphomicrobiaceae", "Hyphomonadaceae", "Bacillaceae")) %>% 
+  colorspace::desaturate(amount = .25)
+
+
+```
+
+# Relative Abundance
+
+```{r}
+
+melted =
+  mCom %>% 
+  microbiome::transform("compositional") %>% 
+  psmelt() %>% 
+  mutate(taxa = case_when(
+    Abundance >= quantile(Abundance, 0.95) ~ Family,
+    Abundance < quantile(Abundance, 0.95) ~ "Others")) %>% 
+  group_by(taxa, 
+           Description, 
+           Timepoint) %>% 
+  summarise(Abundance = mean(Abundance))
+
+write_csv(melted, "relativeAbundance.csv")
+
+plot_4  =
+  ggplot(melted ) +
+  geom_bar(stat = "identity",
+           position = "fill",
+           aes(x = Description,
+                y = Abundance,
+                fill = taxa),
+           alpha = 0.8,
+           color = "white") +
+  scale_fill_manual(values = pal_fam) +
+  facet_grid(cols = vars(Timepoint),
+             scales = "free_x",
+             space = "free_x") +
+  labs(y = "Relative abundance",
+       x = "Description") +
+  guides(fill = 
+           guide_legend(label.theme = element_text(size = 20),
+                        keyheight = 0.8,
+                        keywidth = 0.8,
+                        ncol = 1)) +
+  theme(legend.position = "right",
+        axis.title.x = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.border = element_rect(fill = NA, linewidth = 2),
+        panel.spacing.x = unit(3, "lines"),
+        text = element_text(family = "Times New Roman", size = 30),
+        legend.key = element_rect(linewidth = 0,
+                                  linetype = 0))
+
+# save all in a pdf
+
+cairo_pdf("04_figures/relativeAbundance_family.pdf",
+    width = 16,
+    height = 16,
+    onefile = T)
+plot_4
+dev.off()
+
+tiff("04_figures/relativeAbundance_family.tiff", width = 1600, height = 1600)
+plot_4
+dev.off()
+
+```
+
+## DIVERSITY
+
+### Alpha Diversity
+
+Here we switch from plug-in to estimated measures of diversity and richness
+
+```{r}
+
+## diversity estimates
+
+sample_data(mCom)$Time = sample_data(mCom)$Timepoint %>% as.numeric()
+
+set.seed(666)
+
+res_divnet = readRDS("res_divnet.RDS")
+
+res_divnet = 
+  mCom %>% 
+  divnet(formula = ~ Description * Time,
+    tuning = "fast")
+
+  
+  
+saveRDS(res_divnet, "res_divnet.RDS")
+
+alpha_diversity_estimates =
+  map_dfr(res_divnet[1:2],
+           ~ summary(.x), .id = "name") %>% 
+  left_join(meta(mCom) %>% 
+              rownames_to_column("sample_names"),
+            by = "sample_names") %>% 
+  group_by(name, Description, Timepoint) %>% 
+  summarise(across(1:4, mean),
+            count = n(),
+            sd = error*sqrt(n())) 
+
+# no significance at alpha diversity level (sample size too small)
+asd = data.frame(alpha_diversity_estimates)
+
+shannont1 = BSDA::tsum.test(mean.x = asd[2, 4],
+                            s.x = asd[2, 9],
+                            n.x = 3,
+                            mean.y = asd[4, 4],
+                            s.y = asd[4, 9],
+                            n.y = 3,
+                            var.equal = F)$p.value
+shannont2 = BSDA::tsum.test(mean.x = asd[3, 4],
+                            s.x = asd[3, 9],
+                            n.x = 3,
+                            mean.y = asd[5, 4],
+                            s.y = asd[5, 9],
+                            n.y = 3, var.equal = F)$p.value
+simp1 = BSDA::tsum.test(mean.x = asd[7, 4],
+                        s.x = asd[7, 9],
+                        n.x = 3,
+                        mean.y = asd[9, 4],
+                        s.y = asd[9, 9],
+                        n.y = 3,
+                        var.equal = F)$p.value
+simp2 = BSDA::tsum.test(mean.x = asd[8, 4],
+                        s.x = asd[8, 9],
+                        n.x = 3,
+                        mean.y = asd[10, 4],
+                        s.y = asd[10, 9],
+                        n.y = 3,
+                        var.equal = F)$p.value
+# no significance
+
+
+annotation_Df = 
+  data.frame(
+    Timepoint = c("T1", "T2", "T1", "T2"),
+    name = c("shannon", "shannon", "simpson", "simpson"),
+    start = rep("Control", 4),
+    end = rep("Treated", 4),
+    y = c(3.5, 3.5, 0.20, 0.20),
+    label = p.adjust(c(shannont1, shannont2, simp1, simp2), "holm")
+  )
+
+plot_5 = 
+  ggplot(data = alpha_diversity_estimates,
+               aes(x = Description,
+                   y = estimate,
+                   ymin = lower,
+                   ymax = upper,
+                   color = Description)) +
+  geom_pointrange(size = 1.5) +
+  scale_color_manual(values = pal_description) +
+  theme(legend.position = "bottom",
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        text = element_text(family = "Times New Roman", size = 30),
+        axis.title.y = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.border = element_rect(fill = NA, size = 2),
+        panel.spacing.x = unit(5, "lines")) +
+  ggpubr::geom_signif(data = annotation_Df,
+                      inherit.aes = F,
+                      aes(xmin = start, xmax = end,
+                          annotations = round(label, 3), y_position = y),
+                      manual = T,
+                      textsize = 7.5,
+                      vjust = 0.3,
+                      family = "Arial",
+                      color = "#212121") +
+  facet_grid(name ~ Timepoint,
+             scales = "free", space = "free_x")
+
+cairo_pdf("04_figures/alphaDiversity.pdf",
+          width = 16,
+          height = 16,
+          onefile = T)
+plot_5
+dev.off()
+
+tiff("04_figures/alphaDiversity.tiff", width = 1600, height = 1600)
+plot_5
+dev.off()
+
+```
+
+### Beta Diversity
+
+```{r}
+
+## testing differences in distance
+
+
+set.seed(1)
+
+res_permanova =
+  vegan::adonis2(t(abundances(mCom, "clr")) ~ Description * Time,
+                 method = "euclidean",
+                 data = meta(mCom), permutations = 9999)
+
+plot_table = res_permanova %>% 
+  mutate(across(where(is_double), ~ round(.x, 4))) %>% 
+  ggpubr::ggtexttable(theme = ggpubr::ttheme("classic", base_size = 30)) %>% 
+  ggpubr::tab_add_title(text = "PERMANOVA", size = 30) +
+  theme(text = element_text(family = "Times New Roman", size = 30))
+
+## PCA
+
+res_prcomp =
+  prcomp(
+    mCom_nto %>% 
+      abundances("clr") %>% 
+      t())
+
+plot_pca_1 = 
+  res_prcomp$x %>% 
+  as.data.frame() %>% 
+  rownames_to_column("sample_names") %>% 
+  left_join(meta(mCom) %>% 
+              rownames_to_column("sample_names")) %>%
+              group_by(Description) %>% 
+  mutate(meanPC1 = mean(PC1),
+         meanPC3 = mean(PC3)) %>% 
+  ggplot(
+    aes(x = PC1,
+        y = PC3,
+        group = Description,
+        color = Description,
+        shape = Timepoint,
+        fill = Description)) +
+  geom_point(size = 7.5) +
+  scale_shape_manual(values = c(1, 2)) +
+  stat_ellipse(linetype = 0,
+               geom = "polygon",
+               type = "norm",
+               alpha = 0.05) +  
+  scale_color_manual(values = pal_description,
+                     aesthetics = c("fill", "color")) +
+  labs(x = paste("Dim. 1,", round(res_prcomp$sdev[1]^2/sum(res_prcomp$sdev^2),2)),
+       y = paste("Dim. 3,", round(res_prcomp$sdev[3]^2/sum(res_prcomp$sdev^2),2))) +
+  theme(legend.position = "right",
+        panel.grid.major.x = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        text = element_text(family = "Times New Roman"),
+        panel.border = element_rect(size = 1.5, fill = NA)) +
+  geom_polygon(aes(x = meanPC1,
+                   y = meanPC3),
+               group = 1,
+               alpha = 0,
+               fill = "white",
+               color = "#aaaaaa",
+               size = 1,
+               linetype = "dotted") +
+  ggpubr::stat_mean(size = 7.5,
+            shape = 20)
+
+
+plot_pca_2 = 
+  res_prcomp$x %>% 
+  as.data.frame() %>% 
+  rownames_to_column("sample_names") %>% 
+  left_join(meta(mCom) %>% 
+              rownames_to_column("sample_names")) %>%
+              group_by(Description) %>% 
+  mutate(meanPC1 = mean(PC1),
+         meanPC2 = mean(PC2)) %>% 
+  ggplot(
+    aes(x = PC1,
+        y = PC2,
+        group = Description,
+        color = Description,
+        shape = Timepoint,
+        fill = Description)) +
+  geom_point(size = 7.5) +
+  scale_shape_manual(values = c(1, 2)) +
+  stat_ellipse(linetype = 0,
+               geom = "polygon",
+               type = "norm",
+               alpha = 0.05) +  
+  scale_color_manual(values = pal_description,
+                     aesthetics = c("fill", "color")) +
+  labs(x = paste("Dim. 1,", round(res_prcomp$sdev[1]^2/sum(res_prcomp$sdev^2),2)),
+       y = paste("Dim. 2,", round(res_prcomp$sdev[2]^2/sum(res_prcomp$sdev^2),2))) +
+  theme(legend.position = "right",
+        panel.grid.major.x = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        text = element_text(family = "Times New Roman"),
+        panel.border = element_rect(size = 1.5, fill = NA)) +
+  geom_polygon(aes(x = meanPC1,
+                   y = meanPC2),
+               group = 1,
+               alpha = 0,
+               fill = "white",
+               color = "#aaaaaa",
+               size = 1,
+               linetype = "dotted") +
+  ggpubr::stat_mean(size = 7.5,
+            shape = 20)
+
+plot_pca_3 =
+  res_prcomp$x %>% 
+  as.data.frame() %>% 
+  rownames_to_column("sample_names") %>% 
+  left_join(meta(mCom) %>% 
+              rownames_to_column("sample_names")) %>%
+              group_by(Description) %>% 
+  mutate(meanPC2 = mean(PC2),
+         meanPC3 = mean(PC3)) %>% 
+  ggplot(
+    aes(x = PC2,
+        y = PC3,
+        group = Description,
+        color = Description,
+        shape = Timepoint,
+        fill = Description)) +
+  geom_point(size = 7.5) +
+  scale_shape_manual(values = c(1, 2)) +
+  stat_ellipse(linetype = 0,
+               geom = "polygon",
+               type = "norm",
+               alpha = 0.05) +  
+  scale_color_manual(values = pal_description,
+                     aesthetics = c("fill", "color")) +
+  labs(x = paste("Dim. 2,", round(res_prcomp$sdev[2]^2/sum(res_prcomp$sdev^2),2)),
+       y = paste("Dim. 3,", round(res_prcomp$sdev[3]^2/sum(res_prcomp$sdev^2),2))) +
+  theme(legend.position = "right",
+        panel.grid.major.x = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        text = element_text(family = "Times New Roman"),
+        panel.border = element_rect(size = 1.5, fill = NA)) +
+  geom_polygon(aes(x = meanPC2,
+                   y = meanPC3),
+               group = 1,
+               alpha = 0,
+               fill = "white",
+               color = "#aaaaaa",
+               size = 1,
+               linetype = "dotted") +
+  ggpubr::stat_mean(size = 7.5,
+            shape = 20)
+
+cairo_pdf("04_figures/PCA.pdf",
+          width = 20,
+          height = 16)
+plot_pca_2 + plot_spacer() + plot_pca_1 + plot_pca_3 + 
+  plot_layout(ncol =  2, guides = "collect")
+dev.off()
+
+tiff("04_figures/PCA.tiff", 2000, 1600)
+plot_pca_2  + plot_spacer() + plot_pca_1 + plot_pca_3 + 
+  plot_layout(ncol =  2, guides = "collect")
+dev.off()
+
+cairo_pdf("04_figures/table.pdf",
+          width = 16,
+          height = 8)
+plot_table
+dev.off()
+
+tiff("04_figures/table.tiff", 1600, 800)
+plot_table
+dev.off()
+
+```
+
+## DIFFERENTIAL ABUNDANCE
+
+### ANCOM-BC
+
+```{r}
+
+## add identifiers to genus names
+
+new_tax_table = 
+  mCom@tax_table@.Data %>% 
+  as.data.frame() %>% 
+  mutate(Genus = vctrs::vec_as_names(Genus, repair = "unique") %>% 
+           sub("...", "_", fixed = T, .))
+
+mCom_id = 
+  phyloseq(
+    otu_table(mCom@otu_table, taxa_are_rows = T),
+    sample_data(mCom@sam_data),
+    tax_table(new_tax_table %>% 
+                as.matrix))
+
+mCom_id = 
+  mCom_id %>% 
+  subset_samples(., Timepoint != "T0") %>%  
+  prune_taxa(taxa_sums(.) >= 15, .)
+
+ntaxa(mCom_id)
+
+# divided by time points
+
+res_ancombc_t1 = 
+  ANCOMBC::ancombc(
+    mCom_id %>% 
+      subset_samples(Timepoint == "T1"),
+    formula = "Description",
+    p_adj_method = "holm",
+    prv_cut = 0)
+
+res_ancombc_t2 = 
+  ANCOMBC::ancombc(
+    mCom_id %>% 
+      subset_samples(Timepoint == "T2"),
+    formula = "Description",
+    p_adj_method = "holm",
+    prv_cut = 0)
+
+## Timepoint 1
+
+res_df_t1 = 
+  res_ancombc_t1$res %>% reduce(bind_cols) %>% 
+  select(
+    c(1, 3, 6, 9, 12, 15, 18)) %>% 
+  `colnames<-`(c("ASV", names(res_ancombc_t1$res))) %>%
+  mutate(significance = as.factor(case_when(
+    q_val > 0.01 & q_val <= 0.05 ~ "*",
+    q_val > 0.001 & q_val <= 0.01 ~ "**",
+    q_val > 0.0001 & q_val <= 0.001 ~ "***",
+    q_val <= 0.0001 ~ "****",
+    TRUE ~ "ns")))
+
+res_df_t2 = 
+  res_ancombc_t2$res %>% reduce(bind_cols) %>% 
+  select(
+    c(1, 3, 6, 9, 12, 15, 18)) %>% 
+  `colnames<-`(c("ASV", names(res_ancombc_t1$res))) %>%
+  mutate(significance = as.factor(case_when(
+    q_val > 0.01 & q_val <= 0.05 ~ "*",
+    q_val > 0.001 & q_val <= 0.01 ~ "**",
+    q_val > 0.0001 & q_val <= 0.001 ~ "***",
+    q_val <= 0.0001 ~ "****",
+    TRUE ~ "ns"))) 
+
+res_df_all = 
+  bind_rows(list("<- Control|T1|Treated ->" = res_df_t1,
+                 "<- Control|T2|Treated ->" =  res_df_t2),
+            .id = "var")
+
+res_df_all$significance = relevel(res_df_all$significance, ref = "ns")
+
+plot_7a = 
+  ggplot(res_df_all) +
+  geom_density(
+    aes(x = W,
+        fill = ifelse(W < 0, "Control", "Treated")),
+    alpha = 0.9,
+    size = 0.5,
+    color = "#333333") +
+  scale_fill_manual(values = pal_description) +
+  facet_wrap(~var) +
+  annotate(geom = "rect", xmin = 3.5, xmax = res_df_all$W %>% max(),
+           ymin = 0, ymax = 1, alpha = 0.2, fill = "#aaaaaa") +
+  annotate(geom = "rect", xmax = -3.5, xmin = res_df_all$W %>% min(),
+           ymin = 0, ymax = 1, alpha = 0.2, fill = "#aaaaaa") +
+  theme(legend.position = "right",
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        text = element_text(family = "Times New Roman", size = 30),
+        panel.grid.major.x = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.border = element_rect(size = 2, fill = NA),
+        panel.spacing.x = unit(5, "lines"))
+
+relAbu_df_all = 
+  res_df_all %>%
+  filter(q_val <= 0.05) %>% 
+  left_join(tax_table(mCom_id) %>% 
+              as.data.frame() %>% 
+              rownames_to_column("ASV")) %>% 
+  mutate(Genus = fct_reorder(Genus, Order, min))
+
+mCom_id %>%
+  speedyseq::psmelt() %>% 
+  group_by(Genus, Description, Timepoint) %>% 
+  summarise(ab = sum(Abundance)) %>% filter(Genus %in% relAbu_df_all$Genus) %>% 
+  write_tsv("diff_abb.csv")
+
+pal_help = 
+  paletteer::paletteer_d("pals::kelly")[c(3:18)] %>% 
+  as.vector() %>% 
+  set_names(relAbu_df_all$Family %>% unique())
+  
+plot_8b = 
+  relAbu_df_all %>% 
+  ggplot(aes(y = Genus,
+             x = lfc,
+             fill = Family)) +
+  geom_bar(alpha = .9,
+           stat = "identity",
+           position = "dodge") +
+  geom_errorbar(aes(xmin = lfc - se, xmax = lfc + se), color = "#212121", width = 0.25) +
+  geom_text(aes(label = significance, x = ifelse(lfc < 0, lfc - 1, lfc + 1)), size = 7.5) +
+  scale_fill_manual(values = pal_help) +
+  scale_alpha(range = c(0.2, 1)) +
+  theme(axis.text.y = element_text(size = 13, face = "bold"),
+        axis.title.y = element_blank(),
+        legend.position = "right",
+        panel.grid.major.y = element_blank(),
+        strip.text = element_blank(),
+        legend.text = element_text(size = 20),
+        text = element_text(family = "Times New Roman", size = 30),
+        panel.border = element_rect(size = 2, fill = NA)) +
+  facet_wrap(~var, scale = "free_y") +
+  guides(fill = guide_legend(ncol = 1))
+
+
+cairo_pdf("04_figures/t1_t2_CvT.pdf",
+          width = 25,
+          height = 16)
+plot_7a / plot_8b + plot_layout(heights = c(1, 5))
+dev.off()
+
+tiff("04_figures/st1_t2_CvT.tiff", 2500, 1600)
+plot_7a / plot_8b + plot_layout(heights = c(1, 5))
+dev.off()
+
+
+melted = 
+  mCom_id %>%
+  transform("log10p") %>% 
+  speedyseq::psmelt() %>% 
+  filter(Genus %in% relAbu_df_all$Genus)
+
+plot_c = 
+melted %>% 
+  group_by(Family, Description) %>% 
+  tidyHeatmap::heatmap(Genus, Sample, Abundance,
+                       column_names_gp = grid::gpar(fontsize = 0),
+                       palette_grouping = 
+                         list(pal_help, pal_description),
+                       row_names_gp = grid::gpar(fontsize = 10),
+                       palette_value = circlize::colorRamp2(
+                         c(0, 1, 2, 3, 4), viridis::magma(5, direction = -1)
+                       )) %>% 
+  tidyHeatmap::add_tile(Timepoint,
+                        palette = c("grey60", "grey50"),
+                        size = unit(.5, "lines"))
+
+cairo_pdf("04_figures/heatmap.pdf",
+          width = 16,
+          height = 25)
+plot_c
+dev.off()
+
+tiff("04_figures/heatmap.tiff", 1600, 2500)
+plot_c
+dev.off()
+
+
+```
